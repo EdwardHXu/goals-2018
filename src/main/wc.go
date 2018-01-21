@@ -19,7 +19,7 @@ func mapF(document string, value string) (res []mapreduce.KeyValue) {
 		return !unicode.IsLetter(r)
 	})
 	for _, word := range words {
-		res = append(result, mapreduce.KeyValue{word, "1"})
+		res = append(res, mapreduce.KeyValue{word, "1"})
 	}
 	return res
 }
