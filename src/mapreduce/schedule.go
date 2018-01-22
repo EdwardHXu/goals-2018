@@ -50,7 +50,7 @@ func (mr *Master) schedule(phase jobPhase) {
 	}
 	for i := 0; i < ntasks; i++ {
 		<-completed
-		fmt.Println("i:%d", i)
+		fmt.Printf("i:%d", i)
 	}
 	//
 	//
