@@ -16,7 +16,6 @@ func doReduce(
 	nMap int, // the number of map tasks that were run ("M" in the paper)
 	reduceF func(key string, values []string) string,
 ) {
-	// TODO:
 	// You will need to write this function.
 	// You can find the intermediate file for this reduce task from map task number
 	// m using reduceName(jobName, m, reduceTaskNumber).
