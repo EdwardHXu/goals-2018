@@ -14,7 +14,7 @@ import "unicode"
 // key/value pairs, each represented by a mapreduce.KeyValue.
 func mapF(document string, value string) (res []mapreduce.KeyValue) {
 	// TODO: you should complete this to do the inverted index challenge
-	words := strings.FieldsFun(value, func(c rune) bool {
+	words := strings.FieldsFunc(value, func(c rune) bool {
 		return !unicode.IsLetter(c)
 	})
 	for _, w := range words {
@@ -29,9 +29,9 @@ func mapF(document string, value string) (res []mapreduce.KeyValue) {
 func reduceF(key string, values []string) string {
 	// TODO: you should complete this to do the inverted index challenge
 	sort.Strings(values)
-	values = func(values []strings) []string {
+	values = func(values []string) []string {
 		var res []string
-		valueMap := make(map[string]bool)
+		valuesMap := make(map[string]bool)
 		for _, v := range values {
 			if _, ok := valuesMap[v]; !ok {
 				valuesMap[v] = true
