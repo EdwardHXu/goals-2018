@@ -6,12 +6,10 @@ import "fmt"
 func (mr *Master) schedule(phase jobPhase) {
 	var ntasks int
 	var nios int // number of inputs (for reduce) or outputs (for map)
-	isMapPhase := false
 	switch phase {
 	case mapPhase:
 		ntasks = len(mr.files)
 		nios = mr.nReduce
-		isMapPhase = true
 	case reducePhase:
 		ntasks = mr.nReduce
 		nios = len(mr.files)
@@ -24,16 +22,16 @@ func (mr *Master) schedule(phase jobPhase) {
 	// Remember that workers may fail, and that any given worker may finish
 	// multiple tasks.
 	//
-	var taskQueue = []DoTaskArgs{}
+	var queue = []DoTaskArgs{}
 	for t := 0; t < ntasks; t++ {
 		task := DoTaskArgs{mr.jobName, "", phase, t, nios}
-		if isMapPhase {
+		if phase == mapPhase {
 			task.File = mr.files[t]
 		}
-		taskQueue = append(taskQueue, task)
+		queue = append(queue, task)
 	}
 	completed := make(chan int)
-	for len(taskQueue) > 0 {
+	for len(queue) > 0 {
 		go func(task DoTaskArgs) {
 			for w := range mr.registerChannel {
 				if call(w, "Worker.DoTask", &task, new(struct{})) {
@@ -45,8 +43,8 @@ func (mr *Master) schedule(phase jobPhase) {
 					mr.registerChannel <- w
 				}()
 			}
-		}(taskQueue[0])
-		taskQueue = taskQueue[1:]
+		}(queue[0])
+		queue = queue[1:]
 	}
 	for i := 0; i < ntasks; i++ {
 		<-completed
