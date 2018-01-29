@@ -54,7 +54,6 @@ func doMap(
 		if err != nil {
 			fmt.Println(err)
 		}
-		defer f.Close()
 		enc := json.NewEncoder(f)
 		for _, kv := range KeyValList {
 			if uint32(r) == ihash(kv.Key)%uint32(nReduce) {
@@ -64,6 +63,7 @@ func doMap(
 				}
 			}
 		}
+		f.Close()
 	}
 }
 
