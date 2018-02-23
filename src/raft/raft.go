@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"bytes"
+	"encoding/gob"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -108,12 +110,13 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := gob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -122,10 +125,11 @@ func (rf *Raft) persist() {
 func (rf *Raft) readPersist(data []byte) {
 	// Your code here (2C).
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := gob.NewDecoder(r)
-	// d.Decode(&rf.xxx)
-	// d.Decode(&rf.yyy)
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	d.Decode(&rf.currentTerm)
+	d.Decode(&rf.votedFor)
+	d.Decode(&rf.log)
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
@@ -168,6 +172,23 @@ type AppendEntriesReply struct {
 	NextIndex int
 }
 
+//data structures for persist state
+type InstallSnapshotArgs struct {
+	Term              int
+	LeaderId          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Data              []byte
+}
+
+type InstallSnapshotReply struct {
+	Term int
+}
+
+func (rf *Raft) GetPerisistSize() int {
+	return rf.persister.RaftStateSize()
+}
+
 //
 // example RequestVote RPC handler.
 //
@@ -175,6 +196,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	reply.VoteGranted = false
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
@@ -361,7 +383,7 @@ func (rf *Raft) bcRequestVote() {
 func (rf *Raft) bcAppendEntries() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	comIndex := rf.commitIndex
+	N := rf.commitIndex
 	last := rf.getLastIndex()
 	baseIndex := rf.log[0].LogIndex
 	for i := rf.commitIndex + 1; i <= last; i++ {
@@ -372,11 +394,11 @@ func (rf *Raft) bcAppendEntries() {
 			}
 		}
 		if 2*validNum > len(rf.peers) { //if becomes majority then can commit
-			comIndex = i
+			N = i
 		}
 	}
-	if comIndex != rf.commitIndex {
-		rf.commitIndex = comIndex
+	if N != rf.commitIndex {
+		rf.commitIndex = N
 		rf.chanCommit <- true
 	}
 	for i := range rf.peers {
@@ -397,6 +419,93 @@ func (rf *Raft) bcAppendEntries() {
 			}
 		}
 	}
+}
+
+//using snapshot to handle persist state
+func (rf *Raft) readSnapshot(data []byte) {
+	rf.readPersist(rf.persister.ReadRaftState())
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	var LastIncludedIndex int
+	var LastIncludedTerm int
+	d.Decode(&LastIncludedIndex)
+	d.Decode(&LastIncludedTerm)
+	rf.commitIndex = LastIncludedIndex
+	rf.lastApplied = LastIncludedIndex
+	rf.log = truncateLog(LastIncludedIndex, LastIncludedTerm, rf.log)
+	msg := ApplyMsg{UseSnapshot: true, Snapshot: data}
+	go func() {
+		rf.chanApply <- msg
+	}()
+}
+
+func (rf *Raft) StartSnapshot(snapshot []byte, index int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	baseIndex := rf.log[0].LogIndex
+	lastIndex := rf.getLastIndex()
+	if index <= baseIndex || index > lastIndex {
+		return
+	}
+	var newLogEntries []LogEntry
+	newLogEntries = append(newLogEntries, LogEntry{LogIndex: index, LogTerm: rf.log[index-baseIndex].LogTerm})
+	for i := index + 1; i <= lastIndex; i++ {
+		newLogEntries = append(newLogEntries, rf.log[i-baseIndex])
+	}
+	rf.log = newLogEntries
+	rf.persist()
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(newLogEntries[0].LogIndex)
+	e.Encode(newLogEntries[0].LogTerm)
+	data := w.Bytes()
+	data = append(data, snapshot...)
+	rf.persister.SaveSnapshot(data)
+}
+
+func truncateLog(lastIncludedIndex int, lastIncludedTerm int, log []LogEntry) []LogEntry {
+	var newLogEntries []LogEntry
+	newLogEntries = append(newLogEntries, LogEntry{LogIndex: lastIncludedIndex, LogTerm: lastIncludedTerm})
+	for index := len(log) - 1; index >= 0; index-- {
+		if log[index].LogIndex == lastIncludedIndex && log[index].LogTerm == lastIncludedTerm {
+			newLogEntries = append(newLogEntries, log[index+1:]...)
+			break
+		}
+	}
+	return newLogEntries
+}
+
+func (rf *Raft) InstallSnapshot(args InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		return
+	}
+	rf.chanHeartbeat <- true
+	rf.state = STATE_FOLLOWER
+	rf.persister.SaveSnapshot(args.Data)
+	rf.log = truncateLog(args.LastIncludedIndex, args.LastIncludedTerm, rf.log)
+	msg := ApplyMsg{UseSnapshot: true, Snapshot: args.Data}
+	rf.commitIndex = args.LastIncludedIndex
+	rf.lastApplied = args.LastIncludedIndex
+	rf.persist()
+	rf.chanApply <- msg
+}
+
+func (rf *Raft) sendInstallSnapshot(server int, args InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	if ok {
+		if reply.Term > rf.currentTerm {
+			rf.currentTerm = reply.Term
+			rf.state = STATE_FOLLOWER
+			rf.votedFor = -1
+			return ok
+		}
+		rf.nextIndex[server] = args.LastIncludedIndex + 1
+		rf.matchIndex[server] = args.LastIncludedIndex
+	}
+	return ok
 }
 
 //
@@ -421,6 +530,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader {
 		index = rf.getLastIndex() + 1
 		rf.log = append(rf.log, LogEntry{LogTerm: term, LogCommand: command, LogIndex: index})
+		rf.persist()
 	}
 	return index, term, isLeader
 }
@@ -466,6 +576,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.readSnapshot(persister.ReadSnapshot())
 
 	go rf.run()
 
@@ -507,6 +618,7 @@ func (rf *Raft) run() {
 			rf.currentTerm++
 			rf.votedFor = rf.me
 			rf.voteCount = 1
+			rf.persist()
 			rf.mu.Unlock()
 			go rf.bcRequestVote()
 			select {
