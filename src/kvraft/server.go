@@ -1,6 +1,7 @@
 package raftkv
 
 import (
+	"bytes"
 	"encoding/gob"
 	"labrpc"
 	"log"
@@ -155,22 +156,47 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	go func() {
 		for {
 			msg := <-kv.applyCh
-			op := msg.Command.(Op)
-			kv.mu.Lock()
-			if !kv.CheckDup(op.Id, op.ReqId) {
-				kv.Execute(op)
-			}
-			ch, ok := kv.result[msg.Index]
-			if ok {
-				select {
-				case <-kv.result[msg.Index]:
-				default:
-				}
-				ch <- op
+			if msg.UseSnapshot {
+				var LastIncludedIndex int
+				var LastIncludedTerm int
+				r := bytes.NewBuffer(msg.Snapshot)
+				d := gob.NewDecoder(r)
+				kv.mu.Lock()
+				d.Decode(&LastIncludedIndex)
+				d.Decode(&LastIncludedTerm)
+				kv.db = make(map[string]string)
+				kv.ack = make(map[int64]int)
+				d.Decode(&kv.db)
+				d.Decode(&kv.ack)
+				kv.mu.Unlock()
 			} else {
-				kv.result[msg.Index] = make(chan Op, 1)
+				op := msg.Command.(Op)
+				kv.mu.Lock()
+				if !kv.CheckDup(op.Id, op.ReqId) {
+					kv.Execute(op)
+				}
+				ch, ok := kv.result[msg.Index]
+				if ok {
+					select {
+					case <-kv.result[msg.Index]:
+					default:
+					}
+					ch <- op
+				} else {
+					kv.result[msg.Index] = make(chan Op, 1)
+				}
+
+				// need to use snapshot here!
+				if maxraftstate != -1 && kv.rf.GetPerisistSize() > maxraftstate {
+					w := new(bytes.Buffer)
+					e := gob.NewEncoder(w)
+					e.Encode(kv.db)
+					e.Encode(kv.ack)
+					data := w.Bytes()
+					go kv.rf.StartSnapshot(data, msg.Index)
+				}
+				kv.mu.Unlock()
 			}
-			kv.mu.Unlock()
 		}
 	}()
 
